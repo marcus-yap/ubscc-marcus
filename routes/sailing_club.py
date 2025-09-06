@@ -27,7 +27,7 @@ def min_boats(intervals):
     for s, e in intervals:
         events.append((s, 1))
         events.append((e, -1))
-    events.sort(key=lambda x: (x[0], x[1]))
+    events.sort(key=lambda x: (x[0], x[1])) 
     cur = 0
     peak = 0
     for _, delta in events:
@@ -37,12 +37,17 @@ def min_boats(intervals):
     return peak
 
 
-@app.route('/sailing-club', methods=['POST'])
-def sailing_club():
-    data = request.get_json()
-    logging.info("data sent for evaluation {}".format(data))
+@app.route('/sailing-club/submission', methods=['POST'])
+def sailing_club_submission():
+    try:
+        data = request.get_json(force=False, silent=False)
+    except Exception:
+        err = {"error": "Invalid JSON. Ensure Content-Type: application/json and a valid body."}
+        return Response(json.dumps(err), status=400, mimetype="application/json")
 
-    test_cases = data.get("testCases", [])
+    logging.info("data sent for evaluation %s", data)
+
+    test_cases = (data or {}).get("testCases", [])
     solutions = []
 
     for tc in test_cases:
@@ -61,5 +66,5 @@ def sailing_club():
         solutions.append(solution)
 
     result = {"solutions": solutions}
-    logging.info("My result :{}".format(result))
+    logging.info("My result :%s", result)
     return Response(json.dumps(result), mimetype="application/json")
