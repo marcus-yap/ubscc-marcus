@@ -4,7 +4,6 @@ import math
 import re
 
 from flask import request
-
 from routes import app
 
 logger = logging.getLogger(__name__)
@@ -16,70 +15,95 @@ GREEK = {
 }
 
 def replace_frac(expr: str) -> str:
+    expr = expr.replace(r'\dfrac', r'\frac').replace(r'\tfrac', r'\frac')
     while True:
         m = re.search(r'\\frac\s*{', expr)
         if not m:
             break
         i = m.end()
-        # parse numerator
+
+        # parse numerator {...} with nesting
         depth, start = 1, i
         while i < len(expr) and depth:
-            if expr[i] == '{': depth += 1
-            elif expr[i] == '}': depth -= 1
-            i += 1
-        if depth != 0:  # unbalanced
-            break
-        num = expr[start:i-1]
-
-        # expect '/{'
-        if i >= len(expr) or expr[i] != '/':
-            break
-        i += 1
-        if i >= len(expr) or expr[i] != '{':
-            break
-        i += 1
-
-        # parse denominator
-        depth, start = 1, i
-        while i < len(expr) and depth:
-            if expr[i] == '{': depth += 1
-            elif expr[i] == '}': depth -= 1
+            if expr[i] == '{':
+                depth += 1
+            elif expr[i] == '}':
+                depth -= 1
             i += 1
         if depth != 0:
             break
-        den = expr[start:i-1]
+        num = expr[start:i-1]
 
-        expr = expr[:m.start()] + f"(({num})/({den}))" + expr[i:]
+        # allow spaces before '/' and before '{'
+        j = i
+        while j < len(expr) and expr[j].isspace():
+            j += 1
+        if j >= len(expr) or expr[j] != '/':
+            break
+        j += 1
+        while j < len(expr) and expr[j].isspace():
+            j += 1
+        if j >= len(expr) or expr[j] != '{':
+            break
+        j += 1
+
+        # parse denominator {...} with nesting
+        depth, start = 1, j
+        while j < len(expr) and depth:
+            if expr[j] == '{':
+                depth += 1
+            elif expr[j] == '}':
+                depth -= 1
+            j += 1
+        if depth != 0:
+            break
+        den = expr[start:j-1]
+
+        expr = expr[:m.start()] + f"(({num})/({den}))" + expr[j:]
     return expr
 
+FUNC_NAMES = ("max", "min", "log", "math")  # extend as needed
+
 def insert_implicit_multiplication(s: str) -> str:
-    # identifier/number/close-bracket immediately followed by '('  -> insert '*'
-    s = re.sub(r'(?<=[0-9A-Za-z_)\]])\s*\(', r'*(', s)
-    # ')' immediately followed by identifier/number  -> insert '*'
+    # 1) token '(' after an identifier/number/']' or ')', unless previous token is a function name
+    def add_star_before_paren(match):
+        before = match.group(1)  # last char before '('
+        # Find the word immediately before '(' (letters/underscores/digits)
+        # We look back up to, say, 32 chars to capture the function name.
+        span_start = max(0, match.start() - 32)
+        context = s[span_start:match.start()+1]
+        w = re.search(r'([A-Za-z_][A-Za-z0-9_]*)\s*$', context)
+        if w and w.group(1) in FUNC_NAMES:
+            return before + '('  # keep as function call
+        return before + '*('   # insert multiplication
+
+    s = re.sub(r'([0-9A-Za-z_)\]])\s*\(', add_star_before_paren, s)
+
+    # 2) ')' immediately followed by identifier/number -> insert '*'
     s = re.sub(r'\)\s*(?=[0-9A-Za-z_])', r')*', s)
+
     return s
 
 def latex_to_python(s: str) -> str:
     s = s.strip().replace('$$', '').replace('$', '')
-    # take RHS if an '=' exists
     if '=' in s:
         s = s.split('=')[-1]
 
     # \text{...} -> inner
     s = re.sub(r'\\text\s*{([^}]*)}', r'\1', s)
 
-    # remove spacing helpers
+    # strip spacing helpers
     for token in [r'\left', r'\right', r'\,', r'\;', r'\:', r'\!']:
         s = s.replace(token, '')
 
-    # Greek letters
+    # Greek
     for k, v in GREEK.items():
         s = s.replace(k, v)
 
     # operators
     s = s.replace(r'\cdot', '*').replace(r'\times', '*')
 
-    # max/min in both \max{...} and \max(...)
+    # max/min
     s = re.sub(r'\\max\s*{', 'max(', s)
     s = s.replace(r'\max', 'max')
     s = re.sub(r'\\min\s*{', 'min(', s)
@@ -89,13 +113,16 @@ def latex_to_python(s: str) -> str:
     s = re.sub(r'([A-Za-z0-9]+)_\{([^}]+)\}', r'\1_\2', s)
 
     # expectations/brackets: E[R_m] -> E_R_m
-    s = re.sub(r'([A-Za-z]+)\[([A-Za-z0-9_\\]+)\]',
-               lambda m: f"{m.group(1)}_{m.group(2).replace('\\','')}", s)
+    s = re.sub(
+        r'([A-Za-z]+)\[([A-Za-z0-9_\\]+)\]',
+        lambda m: f"{m.group(1)}_{m.group(2).replace('\\','')}",
+        s
+    )
 
     # fractions
     s = replace_frac(s)
 
-    # summation (simple form): \sum_{i=1}^{N}(body)
+    # simple summation: \sum_{i=1}^{N}(body)
     sum_pat = re.compile(r"""\\sum_\{([A-Za-z])=([^}]+)\}\^\{([^}]+)\}\s*\(([^()]*)\)""")
     def _sum_repl(m):
         i, lo, hi, body = m.group(1), m.group(2), m.group(3), m.group(4)
@@ -113,17 +140,16 @@ def latex_to_python(s: str) -> str:
     # log(...)
     s = re.sub(r'(?<![A-Za-z0-9_])log\s*\(', 'math.log(', s)
 
-    # leftover grouping braces -> parentheses
+    # leftover grouping braces
     s = s.replace('{', '(').replace('}', ')')
 
-    # INSERT implicit multiplication (fixes "beta_i ( ... )")
+    # implicit multiplication
     s = insert_implicit_multiplication(s)
 
-    # final cleanup
+    # cleanup
     s = re.sub(r'\s+', ' ', s).strip()
 
-    # sanity: if any \frac remains, it's unsafe to eval
-    if r'\frac' in s:
+    if r'\frac' in s or r'\dfrac' in s or r'\tfrac' in s:
         raise ValueError("Unconverted \\frac remains in expression")
 
     return s
