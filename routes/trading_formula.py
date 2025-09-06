@@ -29,7 +29,7 @@ def _extract_braced(s: str, start: int):
     raise ValueError("Unbalanced braces in \\frac")
 
 def replace_frac_braced(expr: str) -> str:
-    """Replace \frac{...}{...} (incl. \dfrac, \tfrac), with spaces allowed around '/'."""
+    """Replace \frac{...}{...} (incl. \dfrac, \tfrac), with spaces allowed around '/' or directly adjacent braces."""
     expr = expr.replace(r'\dfrac', r'\frac').replace(r'\tfrac', r'\frac')
     prev = None
     while prev != expr:
@@ -40,23 +40,31 @@ def replace_frac_braced(expr: str) -> str:
                 i += len(r'\frac')
                 while i < len(expr) and expr[i].isspace():
                     i += 1
+                # require a braced numerator
                 if i >= len(expr) or expr[i] != '{':
                     out.append(r'\frac')
                     continue
                 num, i = _extract_braced(expr, i)
+                # skip spaces and accept either '/{den}' or simply '{den}'
                 while i < len(expr) and expr[i].isspace():
                     i += 1
-                if i >= len(expr) or expr[i] != '/':
-                    out.append(r'\frac{' + num + '}')
-                    continue
-                i += 1
-                while i < len(expr) and expr[i].isspace():
+                # handle optional slash between braced groups
+                has_slash = False
+                if i < len(expr) and expr[i] == '/':
+                    has_slash = True
                     i += 1
-                if i >= len(expr) or expr[i] != '{':
-                    out.append(r'\frac{' + num + '}/')
-                    continue
-                den, i = _extract_braced(expr, i)
-                out.append(f"(({num})/({den}))")
+                    while i < len(expr) and expr[i].isspace():
+                        i += 1
+                # now expect a braced denominator
+                if i < len(expr) and expr[i] == '{':
+                    den, i = _extract_braced(expr, i)
+                    out.append(f"(({num})/({den}))")
+                else:
+                    # fallback behaviour: if there was a slash but no brace, emit partial conversion
+                    if has_slash:
+                        out.append(r'\frac{' + num + '}/')
+                    else:
+                        out.append(r'\frac{' + num + '}')
             else:
                 out.append(expr[i])
                 i += 1
