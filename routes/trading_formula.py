@@ -191,4 +191,4 @@ def trading_formula():
             results.append({"error": str(e)})
 
     logging.info("My result :{}".format(results))
-    return json.dumps(results, mimetype="application/json")
+    return Response(json.dumps(results), mimetype="application/json")
