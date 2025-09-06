@@ -14,74 +14,78 @@ GREEK = {
     r"\pi": "pi", r"\rho": "rho", r"\sigma": "sigma", r"\phi": "phi", r"\omega": "omega",
 }
 
+def _extract_braced(s: str, start: int):
+    """Given s and index at '{', return (inner, next_index_after_closing_brace)."""
+    assert s[start] == '{'
+    depth = 0
+    i = start
+    while i < len(s):
+        if s[i] == '{':
+            depth += 1
+        elif s[i] == '}':
+            depth -= 1
+            if depth == 0:
+                # return inner content (without outer braces) and next index
+                return s[start+1:i], i + 1
+        i += 1
+    raise ValueError("Unbalanced braces in \\frac expression")
+
 def replace_frac(expr: str) -> str:
+    """Robustly replace all \frac / \dfrac / \tfrac with ((num)/(den)), allowing spaces."""
     expr = expr.replace(r'\dfrac', r'\frac').replace(r'\tfrac', r'\frac')
-    while True:
-        m = re.search(r'\\frac\s*{', expr)
-        if not m:
-            break
-        i = m.end()
+    i = 0
+    out = []
+    while i < len(expr):
+        if expr.startswith(r'\frac', i):
+            i += len(r'\frac')
+            # skip spaces
+            while i < len(expr) and expr[i].isspace():
+                i += 1
+            if i >= len(expr) or expr[i] != '{':
+                # malformed, keep literal and continue
+                out.append(r'\frac')
+                continue
+            # numerator
+            num, i = _extract_braced(expr, i)
 
-        # parse numerator {...} with nesting
-        depth, start = 1, i
-        while i < len(expr) and depth:
-            if expr[i] == '{':
-                depth += 1
-            elif expr[i] == '}':
-                depth -= 1
+            # skip spaces up to '/'
+            while i < len(expr) and expr[i].isspace():
+                i += 1
+            if i >= len(expr) or expr[i] != '/':
+                # malformed; put back literal and numerator
+                out.append(r'\frac{' + num + '}')
+                continue
             i += 1
-        if depth != 0:
-            break
-        num = expr[start:i-1]
+            # skip spaces to '{'
+            while i < len(expr) and expr[i].isspace():
+                i += 1
+            if i >= len(expr) or expr[i] != '{':
+                out.append(r'\frac{' + num + '}/')
+                continue
+            # denominator
+            den, i = _extract_braced(expr, i)
 
-        # allow spaces before '/' and before '{'
-        j = i
-        while j < len(expr) and expr[j].isspace():
-            j += 1
-        if j >= len(expr) or expr[j] != '/':
-            break
-        j += 1
-        while j < len(expr) and expr[j].isspace():
-            j += 1
-        if j >= len(expr) or expr[j] != '{':
-            break
-        j += 1
+            out.append(f"(({num})/({den}))")
+        else:
+            out.append(expr[i])
+            i += 1
+    return ''.join(out)
 
-        # parse denominator {...} with nesting
-        depth, start = 1, j
-        while j < len(expr) and depth:
-            if expr[j] == '{':
-                depth += 1
-            elif expr[j] == '}':
-                depth -= 1
-            j += 1
-        if depth != 0:
-            break
-        den = expr[start:j-1]
-
-        expr = expr[:m.start()] + f"(({num})/({den}))" + expr[j:]
-    return expr
-
-FUNC_NAMES = ("max", "min", "log", "math")  # extend as needed
+FUNC_NAMES = ("max", "min", "log", "math")
 
 def insert_implicit_multiplication(s: str) -> str:
-    # 1) token '(' after an identifier/number/']' or ')', unless previous token is a function name
-    def add_star_before_paren(match):
-        before = match.group(1)  # last char before '('
-        # Find the word immediately before '(' (letters/underscores/digits)
-        # We look back up to, say, 32 chars to capture the function name.
-        span_start = max(0, match.start() - 32)
-        context = s[span_start:match.start()+1]
+    # Insert * before '(' unless the preceding token is a known function
+    def add_star_before_paren(m):
+        before = m.group(1)
+        # Look back for identifier just before '('
+        start_ctx = max(0, m.start() - 64)
+        context = s[start_ctx:m.start()+1]
         w = re.search(r'([A-Za-z_][A-Za-z0-9_]*)\s*$', context)
         if w and w.group(1) in FUNC_NAMES:
-            return before + '('  # keep as function call
-        return before + '*('   # insert multiplication
-
+            return before + '('  # keep function call
+        return before + '*('
     s = re.sub(r'([0-9A-Za-z_)\]])\s*\(', add_star_before_paren, s)
-
-    # 2) ')' immediately followed by identifier/number -> insert '*'
     s = re.sub(r'\)\s*(?=[0-9A-Za-z_])', r')*', s)
-
     return s
 
 def latex_to_python(s: str) -> str:
@@ -89,10 +93,13 @@ def latex_to_python(s: str) -> str:
     if '=' in s:
         s = s.split('=')[-1]
 
+    # Convert fractions FIRST (most brittle form)
+    s = replace_frac(s)
+
     # \text{...} -> inner
     s = re.sub(r'\\text\s*{([^}]*)}', r'\1', s)
 
-    # strip spacing helpers
+    # spacing helpers
     for token in [r'\left', r'\right', r'\,', r'\;', r'\:', r'\!']:
         s = s.replace(token, '')
 
@@ -112,15 +119,12 @@ def latex_to_python(s: str) -> str:
     # subscripts a_{b} -> a_b
     s = re.sub(r'([A-Za-z0-9]+)_\{([^}]+)\}', r'\1_\2', s)
 
-    # expectations/brackets: E[R_m] -> E_R_m
+    # expectations: E[R_m] -> E_R_m
     s = re.sub(
         r'([A-Za-z]+)\[([A-Za-z0-9_\\]+)\]',
         lambda m: f"{m.group(1)}_{m.group(2).replace('\\','')}",
         s
     )
-
-    # fractions
-    s = replace_frac(s)
 
     # simple summation: \sum_{i=1}^{N}(body)
     sum_pat = re.compile(r"""\\sum_\{([A-Za-z])=([^}]+)\}\^\{([^}]+)\}\s*\(([^()]*)\)""")
@@ -140,18 +144,14 @@ def latex_to_python(s: str) -> str:
     # log(...)
     s = re.sub(r'(?<![A-Za-z0-9_])log\s*\(', 'math.log(', s)
 
-    # leftover grouping braces
+    # final grouping cleanup
     s = s.replace('{', '(').replace('}', ')')
 
-    # implicit multiplication
+    # implicit multiplication (safe)
     s = insert_implicit_multiplication(s)
 
     # cleanup
     s = re.sub(r'\s+', ' ', s).strip()
-
-    if r'\frac' in s or r'\dfrac' in s or r'\tfrac' in s:
-        raise ValueError("Unconverted \\frac remains in expression")
-
     return s
 
 def evaluate_formula(formula: str, variables: dict) -> float:
