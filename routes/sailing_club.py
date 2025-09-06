@@ -1,7 +1,7 @@
 import json
 import logging
 
-from flask import request
+from flask import request, Response
 
 from routes import app
 
@@ -62,4 +62,4 @@ def sailing_club():
 
     result = {"solutions": solutions}
     logging.info("My result :{}".format(result))
-    return json.dumps(result)
+    return Response(json.dumps(result), mimetype="application/json")
