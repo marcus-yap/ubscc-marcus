@@ -15,8 +15,7 @@ GREEK = {
 }
 
 def _extract_braced(s: str, start: int):
-    """Given s and index at '{', return (inner, next_index_after_closing_brace)."""
-    assert s[start] == '{'
+    """At s[start]=='{', return (inner, next_index_after_closing)."""
     depth = 0
     i = start
     while i < len(s):
@@ -25,66 +24,66 @@ def _extract_braced(s: str, start: int):
         elif s[i] == '}':
             depth -= 1
             if depth == 0:
-                # return inner content (without outer braces) and next index
                 return s[start+1:i], i + 1
         i += 1
-    raise ValueError("Unbalanced braces in \\frac expression")
+    raise ValueError("Unbalanced braces in \\frac")
 
-def replace_frac(expr: str) -> str:
-    """Robustly replace all \frac / \dfrac / \tfrac with ((num)/(den)), allowing spaces."""
+def replace_frac_braced(expr: str) -> str:
+    """Replace \frac{...}{...} (incl. \dfrac, \tfrac), with spaces allowed around '/'."""
     expr = expr.replace(r'\dfrac', r'\frac').replace(r'\tfrac', r'\frac')
-    i = 0
-    out = []
+    i, out = 0, []
     while i < len(expr):
         if expr.startswith(r'\frac', i):
             i += len(r'\frac')
-            # skip spaces
             while i < len(expr) and expr[i].isspace():
                 i += 1
             if i >= len(expr) or expr[i] != '{':
-                # malformed, keep literal and continue
                 out.append(r'\frac')
                 continue
-            # numerator
             num, i = _extract_braced(expr, i)
-
-            # skip spaces up to '/'
             while i < len(expr) and expr[i].isspace():
                 i += 1
             if i >= len(expr) or expr[i] != '/':
-                # malformed; put back literal and numerator
                 out.append(r'\frac{' + num + '}')
                 continue
             i += 1
-            # skip spaces to '{'
             while i < len(expr) and expr[i].isspace():
                 i += 1
             if i >= len(expr) or expr[i] != '{':
                 out.append(r'\frac{' + num + '}/')
                 continue
-            # denominator
             den, i = _extract_braced(expr, i)
-
             out.append(f"(({num})/({den}))")
         else:
-            out.append(expr[i])
-            i += 1
+            out.append(expr[i]); i += 1
     return ''.join(out)
+
+def replace_frac_parenthesized(expr: str) -> str:
+    """
+    Fallback if braces were already converted to parentheses:
+      \frac( A )/( B )  -> ((A)/(B))
+    Be tolerant to spaces.
+    """
+    pattern = re.compile(r'\\frac\s*\(\s*([^()]*)\s*\)\s*/\s*\(\s*([^()]*)\s*\)')
+    prev = None
+    while prev != expr:
+        prev = expr
+        expr = pattern.sub(r'((\1)/(\2))', expr)
+    return expr
 
 FUNC_NAMES = ("max", "min", "log", "math")
 
 def insert_implicit_multiplication(s: str) -> str:
-    # Insert * before '(' unless the preceding token is a known function
-    def add_star_before_paren(m):
+    # Insert '*' before '(' unless preceded by a known function
+    def _before_paren(m):
         before = m.group(1)
-        # Look back for identifier just before '('
-        start_ctx = max(0, m.start() - 64)
-        context = s[start_ctx:m.start()+1]
-        w = re.search(r'([A-Za-z_][A-Za-z0-9_]*)\s*$', context)
+        ctx = s[max(0, m.start()-64):m.start()+1]
+        w = re.search(r'([A-Za-z_][A-Za-z0-9_]*)\s*$', ctx)
         if w and w.group(1) in FUNC_NAMES:
-            return before + '('  # keep function call
+            return before + '('
         return before + '*('
-    s = re.sub(r'([0-9A-Za-z_)\]])\s*\(', add_star_before_paren, s)
+    s = re.sub(r'([0-9A-Za-z_)\]])\s*\(', _before_paren, s)
+    # And after ')' if followed by an identifier/number
     s = re.sub(r'\)\s*(?=[0-9A-Za-z_])', r')*', s)
     return s
 
@@ -93,40 +92,32 @@ def latex_to_python(s: str) -> str:
     if '=' in s:
         s = s.split('=')[-1]
 
-    # Convert fractions FIRST (most brittle form)
-    s = replace_frac(s)
-
-    # \text{...} -> inner
-    s = re.sub(r'\\text\s*{([^}]*)}', r'\1', s)
-
-    # spacing helpers
+    # 1) Normalize easy wrappers first
+    s = re.sub(r'\\text\s*{([^}]*)}', r'\1', s)  # \text{X} -> X
     for token in [r'\left', r'\right', r'\,', r'\;', r'\:', r'\!']:
         s = s.replace(token, '')
 
-    # Greek
+    # 2) FRACTIONS (do this early and robustly)
+    s = replace_frac_braced(s)
+    s = replace_frac_parenthesized(s)  # fallback if braces were already '()'
+
+    # 3) Greek and operators
     for k, v in GREEK.items():
         s = s.replace(k, v)
-
-    # operators
     s = s.replace(r'\cdot', '*').replace(r'\times', '*')
 
-    # max/min
+    # 4) max/min
     s = re.sub(r'\\max\s*{', 'max(', s)
     s = s.replace(r'\max', 'max')
     s = re.sub(r'\\min\s*{', 'min(', s)
     s = s.replace(r'\min', 'min')
 
-    # subscripts a_{b} -> a_b
+    # 5) subscripts and expectations: a_{b}->a_b ; E[R_m]->E_R_m
     s = re.sub(r'([A-Za-z0-9]+)_\{([^}]+)\}', r'\1_\2', s)
+    s = re.sub(r'([A-Za-z]+)\[([A-Za-z0-9_\\]+)\]',
+               lambda m: f"{m.group(1)}_{m.group(2).replace('\\','')}", s)
 
-    # expectations: E[R_m] -> E_R_m
-    s = re.sub(
-        r'([A-Za-z]+)\[([A-Za-z0-9_\\]+)\]',
-        lambda m: f"{m.group(1)}_{m.group(2).replace('\\','')}",
-        s
-    )
-
-    # simple summation: \sum_{i=1}^{N}(body)
+    # 6) simple summation: \sum_{i=1}^{N}(body)
     sum_pat = re.compile(r"""\\sum_\{([A-Za-z])=([^}]+)\}\^\{([^}]+)\}\s*\(([^()]*)\)""")
     def _sum_repl(m):
         i, lo, hi, body = m.group(1), m.group(2), m.group(3), m.group(4)
@@ -135,22 +126,19 @@ def latex_to_python(s: str) -> str:
     while prev != s:
         prev, s = s, sum_pat.sub(_sum_repl, s)
 
-    # e^{x}
+    # 7) e^{x}, exponents, logs
     s = re.sub(r'e\s*\^\s*{([^}]+)}', r'(math.e)**(\1)', s)
-    # powers a^{b} and a^b
     s = re.sub(r'([A-Za-z0-9_)\]]+)\s*\^\s*{([^}]+)}', r'(\1)**(\2)', s)
     s = re.sub(r'([A-Za-z0-9_)\]]+)\s*\^\s*([A-Za-z0-9_]+)', r'(\1)**(\2)', s)
-
-    # log(...)
     s = re.sub(r'(?<![A-Za-z0-9_])log\s*\(', 'math.log(', s)
 
-    # final grouping cleanup
+    # 8) Convert any leftover braces to parentheses (pure grouping)
     s = s.replace('{', '(').replace('}', ')')
 
-    # implicit multiplication (safe)
+    # 9) Implicit multiplication (guarded)
     s = insert_implicit_multiplication(s)
 
-    # cleanup
+    # 10) Cleanup
     s = re.sub(r'\s+', ' ', s).strip()
     return s
 
