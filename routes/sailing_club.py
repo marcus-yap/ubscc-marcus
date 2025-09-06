@@ -38,7 +38,7 @@ def min_boats(intervals):
 
 
 @app.route('/sailing-club', methods=['POST'])
-def evaluate():
+def sailing_club():
     data = request.get_json()
     logging.info("data sent for evaluation {}".format(data))
 
