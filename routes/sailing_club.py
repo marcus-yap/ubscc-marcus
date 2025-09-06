@@ -1,41 +1,34 @@
 import json
 import logging
 
-from flask import request, Response
+from flask import request, Response, jsonify, redirect
 
 from routes import app
 
 logger = logging.getLogger(__name__)
 
 
-def merge_intervals(intervals):
-    if not intervals:
-        return []
-    intervals.sort(key=lambda x: (x[0], x[1]))
-    merged = [intervals[0][:]]
-    for s, e in intervals[1:]:
-        last_s, last_e = merged[-1]
-        if s <= last_e:
-            merged[-1][1] = max(last_e, e)
-        else:
-            merged.append([s, e])
-    return merged
+@app.route('/sailing-club', methods=['POST'])
+def sailing_club_compat():
+    return sailing_club_submission()
 
+@app.route('/', methods=['POST'])
+def root_post_hint():
+    return jsonify({
+        "error": "Wrong endpoint. Use POST /sailing-club/submission with JSON body."
+    }), 404
 
-def min_boats(intervals):
-    events = []
-    for s, e in intervals:
-        events.append((s, 1))
-        events.append((e, -1))
-    events.sort(key=lambda x: (x[0], x[1])) 
-    cur = 0
-    peak = 0
-    for _, delta in events:
-        cur += delta
-        if cur > peak:
-            peak = cur
-    return peak
+@app.errorhandler(400)
+def handle_400(e):
+    return jsonify({"error": "Bad Request", "detail": getattr(e, "description", str(e))}), 400
 
+@app.errorhandler(404)
+def handle_404(e):
+    return jsonify({"error": "Not Found", "detail": "Use POST /sailing-club/submission"}), 404
+
+@app.errorhandler(405)
+def handle_405(e):
+    return jsonify({"error": "Method Not Allowed", "detail": "Check method and path"}), 405
 
 @app.route('/sailing-club/submission', methods=['POST'])
 def sailing_club_submission():
