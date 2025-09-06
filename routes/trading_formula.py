@@ -3,7 +3,7 @@ import logging
 import math
 import re
 
-from flask import request
+from flask import request, Response
 from routes import app
 
 logger = logging.getLogger(__name__)
@@ -185,10 +185,10 @@ def trading_formula():
             formula = case.get("formula", "")
             variables = case.get("variables", {})
             value = evaluate_formula(formula, variables)
-            results.append({"result": f"{value:.4f}"})
+            results.append({"result": float(f"{value:.4f}")})
         except Exception as e:
             logging.exception("Error in case %s", case.get("name", "<unnamed>"))
             results.append({"error": str(e)})
 
     logging.info("My result :{}".format(results))
-    return json.dumps(results)
+    return json.dumps(results, mimetype="application/json")
