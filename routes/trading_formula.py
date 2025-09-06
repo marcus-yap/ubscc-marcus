@@ -31,32 +31,37 @@ def _extract_braced(s: str, start: int):
 def replace_frac_braced(expr: str) -> str:
     """Replace \frac{...}{...} (incl. \dfrac, \tfrac), with spaces allowed around '/'."""
     expr = expr.replace(r'\dfrac', r'\frac').replace(r'\tfrac', r'\frac')
-    i, out = 0, []
-    while i < len(expr):
-        if expr.startswith(r'\frac', i):
-            i += len(r'\frac')
-            while i < len(expr) and expr[i].isspace():
+    prev = None
+    while prev != expr:
+        prev = expr
+        i, out = 0, []
+        while i < len(expr):
+            if expr.startswith(r'\frac', i):
+                i += len(r'\frac')
+                while i < len(expr) and expr[i].isspace():
+                    i += 1
+                if i >= len(expr) or expr[i] != '{':
+                    out.append(r'\frac')
+                    continue
+                num, i = _extract_braced(expr, i)
+                while i < len(expr) and expr[i].isspace():
+                    i += 1
+                if i >= len(expr) or expr[i] != '/':
+                    out.append(r'\frac{' + num + '}')
+                    continue
                 i += 1
-            if i >= len(expr) or expr[i] != '{':
-                out.append(r'\frac')
-                continue
-            num, i = _extract_braced(expr, i)
-            while i < len(expr) and expr[i].isspace():
+                while i < len(expr) and expr[i].isspace():
+                    i += 1
+                if i >= len(expr) or expr[i] != '{':
+                    out.append(r'\frac{' + num + '}/')
+                    continue
+                den, i = _extract_braced(expr, i)
+                out.append(f"(({num})/({den}))")
+            else:
+                out.append(expr[i])
                 i += 1
-            if i >= len(expr) or expr[i] != '/':
-                out.append(r'\frac{' + num + '}')
-                continue
-            i += 1
-            while i < len(expr) and expr[i].isspace():
-                i += 1
-            if i >= len(expr) or expr[i] != '{':
-                out.append(r'\frac{' + num + '}/')
-                continue
-            den, i = _extract_braced(expr, i)
-            out.append(f"(({num})/({den}))")
-        else:
-            out.append(expr[i]); i += 1
-    return ''.join(out)
+        expr = ''.join(out)
+    return expr
 
 def replace_frac_parenthesized(expr: str) -> str:
     """
@@ -74,7 +79,10 @@ def replace_frac_parenthesized(expr: str) -> str:
 FUNC_NAMES = ("max", "min", "log", "math")
 
 def insert_implicit_multiplication(s: str) -> str:
-    # Insert '*' before '(' unless preceded by a known function
+    # Improved implicit multiplication:
+    #  - keep original behavior for inserting '*' before '(' except for known functions
+    #  - insert '*' between a digit and an identifier (2x -> 2*x)
+    #  - insert '*' when a closing paren or digit is followed (possibly via spaces) by an identifier ( )x -> )*x or "2 x" -> "2*x")
     def _before_paren(m):
         before = m.group(1)
         ctx = s[max(0, m.start()-64):m.start()+1]
@@ -82,9 +90,18 @@ def insert_implicit_multiplication(s: str) -> str:
         if w and w.group(1) in FUNC_NAMES:
             return before + '('
         return before + '*('
+
+    # keep previous rule for handling explicit '(' contexts
     s = re.sub(r'([0-9A-Za-z_)\]])\s*\(', _before_paren, s)
-    # And after ')' if followed by an identifier/number
+    # and after ')' if followed by identifier/number
     s = re.sub(r'\)\s*(?=[0-9A-Za-z_])', r')*', s)
+
+    # insert '*' between a digit and an identifier (e.g., 2x -> 2*x)
+    s = re.sub(r'(?<=\d)(?=[A-Za-z_])', '*', s)
+
+    # insert '*' where a digit or closing paren is followed (with optional spaces) by an identifier (e.g., ") x" or "2 x")
+    s = re.sub(r'([0-9\)])\s+(?=[A-Za-z_])', r'\1*', s)
+
     return s
 
 def latex_to_python(s: str) -> str:
@@ -115,7 +132,7 @@ def latex_to_python(s: str) -> str:
     # 5) subscripts and expectations: a_{b}->a_b ; E[R_m]->E_R_m
     s = re.sub(r'([A-Za-z0-9]+)_\{([^}]+)\}', r'\1_\2', s)
     s = re.sub(r'([A-Za-z]+)\[([A-Za-z0-9_\\]+)\]',
-               lambda m: f"{m.group(1)}_{m.group(2).replace('\\','')}", s)
+               lambda m: f"{m.group(1)}_{m.group(2).replace('\\\\','')}", s)
 
     # 6) simple summation: \sum_{i=1}^{N}(body)
     sum_pat = re.compile(r"""\\sum_\{([A-Za-z])=([^}]+)\}\^\{([^}]+)\}\s*\(([^()]*)\)""")
@@ -160,7 +177,8 @@ def trading_formula():
             formula = case.get("formula", "")
             variables = case.get("variables", {})
             value = evaluate_formula(formula, variables)
-            results.append({"result": float(f"{value:.4f}")})
+            # return numeric rounded to 4 decimal places
+            results.append({"result": round(value, 4)})
         except Exception as e:
             logging.exception("Error in case %s", case.get("name", "<unnamed>"))
             results.append({"error": str(e)})
